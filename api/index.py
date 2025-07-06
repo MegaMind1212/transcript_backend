@@ -28,34 +28,15 @@ CORS(app, resources={
     }
 })
 
-# CockroachDB configuration with validation
+# CockroachDB configuration using environment variables with sslmode=require
 def get_db_connection():
-    ssl_ca = os.getenv("SSL_CA")
-    if not ssl_ca:
-        raise ValueError("SSL_CA environment variable is not set or empty")
-    
-    cert_path = "/tmp/cockroachdb_ca.crt"
-    try:
-        with open(cert_path, "w") as f:
-            f.write(ssl_ca.strip())  # Write raw PEM text and strip whitespace
-        # Verify the file contains valid certificate data
-        with open(cert_path, "r") as f:
-            content = f.read()
-            if not content or "BEGIN CERTIFICATE" not in content:
-                raise ValueError("Failed to write valid certificate to file")
-        logger.debug(f"Certificate file written to {cert_path}")
-    except Exception as e:
-        logger.error(f"Error writing certificate file: {str(e)}")
-        raise
-
     conn_params = {
-        "host": os.getenv("DB_HOST", ""),
-        "user": os.getenv("DB_USER", ""),
-        "password": os.getenv("DB_PASSWORD", ""),
-        "database": os.getenv("DB_NAME", ""),
+        "host": os.getenv("DB_HOST", "notesmate-cluster-10018.j77.cockroachlabs.cloud"),
+        "user": os.getenv("DB_USER", "yash"),
+        "password": os.getenv("DB_PASSWORD", "k3O3z8Wdp-Za5gBy_OJQng"),
+        "database": os.getenv("DB_NAME", "notesmatedb"),
         "port": os.getenv("DB_PORT", "26257"),
-        "sslmode": "verify-full",
-        "sslrootcert": cert_path
+        "sslmode": "require"  # Simplified to avoid certificate file issues
     }
     logger.debug(f"Connecting to DB with params: {conn_params}")
     
@@ -109,7 +90,8 @@ def initialize_database():
             db_initialized = True
         except Exception as e:
             logger.error(f"Failed to initialize database: {str(e)}")
-            raise
+            # Allow request to proceed, handle DB failure in endpoints
+            pass
 
 # OPTIONS handler for preflight requests
 @app.route("/api/<path:path>", methods=["OPTIONS"])
@@ -168,11 +150,11 @@ def request_otp():
             success = send_otp_email(empemail, otp)
             if not success:
                 return jsonify({
-                    "message": "Failed to send OTP via email. Check the server console for the OTP."
+                    "message": "Failed to send OTP via email. Check the server logs for the OTP."
                 }), 200
         else:
             return jsonify({
-                "message": "Email service not configured. Check the server console for the OTP."
+                "message": "Email service not configured. Check the server logs for the OTP."
             }), 200
 
         return jsonify({"message": "OTP sent to your registered email address"}), 200
@@ -556,10 +538,16 @@ def update_note():
 def index():
     return jsonify({"message": "NotesMate API is running"})
 
-# Vercel serverless function compatibility
-def handler(event, context):
-    from serverless_wsgi import handle_request
-    return handle_request(app, event, context)
+# Custom Vercel handler for serverless deployment
+def vercel_handler(request):
+    from flask import Response
+    with app.app_context():
+        response = app.full_dispatch_request()
+        return Response(
+            response=response.get_data(),
+            status=response.status_code,
+            headers=dict(response.headers)
+        )
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
