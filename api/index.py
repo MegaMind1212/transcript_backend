@@ -14,7 +14,7 @@ app = Flask(__name__)
 # CORS configuration for GitHub Pages frontend
 CORS(app, resources={
     r"/api/*": {
-        "origins": ["https://your-username.github.io/notesmate-frontend", "http://localhost:8000"],  # Replace with your GitHub Pages URL
+        "origins": ["https://megamind1212.github.io/transcript_frontend", "http://localhost:8000"],  # Replace with your GitHub Pages URL
         "methods": ["GET", "POST", "OPTIONS", "PUT", "DELETE"],
         "allow_headers": ["Content-Type", "Authorization"],
         "supports_credentials": True
