@@ -1,6 +1,6 @@
 import os
+from dotenv import load_dotenv  # For local .env support
 import psycopg2
-import base64
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from datetime import datetime, timedelta
@@ -9,12 +9,14 @@ from email.mime.text import MIMEText
 import random
 import traceback
 
+load_dotenv()  # Load .env file for local development
+
 app = Flask(__name__)
 
 # CORS configuration for GitHub Pages frontend
 CORS(app, resources={
     r"/api/*": {
-        "origins": ["https://megamind1212.github.io/transcript_frontend", "http://localhost:8000"],  # Replace with your GitHub Pages URL
+        "origins": ["https://megamind1212.github.io/transcript_frontend", "http://localhost:8000"],
         "methods": ["GET", "POST", "OPTIONS", "PUT", "DELETE"],
         "allow_headers": ["Content-Type", "Authorization"],
         "supports_credentials": True
@@ -23,24 +25,28 @@ CORS(app, resources={
 
 # CockroachDB configuration
 def get_db_connection():
+    ssl_ca = os.getenv("SSL_CA")
+    if not ssl_ca:
+        raise ValueError("SSL_CA environment variable is not set")
+    
     cert_path = "/tmp/cockroachdb_ca.crt"
     with open(cert_path, "w") as f:
-        f.write(base64.b64decode(os.getenv("SSL_CA")).decode("utf-8"))
+        f.write(ssl_ca)  # Write raw PEM text directly
     
     return psycopg2.connect(
-        host=os.getenv("DB_HOST"),
-        user=os.getenv("DB_USER"),
-        password=os.getenv("DB_PASSWORD"),
-        database=os.getenv("DB_NAME"),
-        port=os.getenv("DB_PORT"),
+        host=os.getenv("DB_HOST", ""),
+        user=os.getenv("DB_USER", ""),
+        password=os.getenv("DB_PASSWORD", ""),
+        database=os.getenv("DB_NAME", ""),
+        port=os.getenv("DB_PORT", "26257"),
         sslmode="verify-full",
         sslrootcert=cert_path
     )
 
 # Environment variables for Gmail SMTP and Deepgram
-GMAIL_EMAIL = os.getenv("GMAIL_EMAIL")
-GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD")
-DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
+GMAIL_EMAIL = os.getenv("GMAIL_EMAIL", "")
+GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD", "")
+DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY", "")
 
 # Create OTPs table if not exists
 def init_db():
@@ -65,8 +71,15 @@ def init_db():
         if conn:
             conn.close()
 
-# Initialize database on app start
-init_db()
+# Delay database initialization until first request
+db_initialized = False
+
+@app.before_request
+def initialize_database():
+    global db_initialized
+    if not db_initialized:
+        init_db()
+        db_initialized = True
 
 # OPTIONS handler for preflight requests
 @app.route("/api/<path:path>", methods=["OPTIONS"])
@@ -521,3 +534,6 @@ def index():
 def handler(event, context):
     from serverless_wsgi import handle_request
     return handle_request(app, event, context)
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
