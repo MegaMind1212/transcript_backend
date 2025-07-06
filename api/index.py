@@ -21,14 +21,14 @@ app = Flask(__name__)
 # CORS configuration with permissive settings for testing
 CORS(app, resources={r"/api/*": {"origins": ["*"], "methods": ["GET", "POST", "OPTIONS", "PUT", "DELETE"], "allow_headers": ["*"], "supports_credentials": True}})
 
-# CockroachDB configuration using environment variables with sslmode=require
+# CockroachDB configuration using only environment variables
 def get_db_connection():
     conn_params = {
-        "host": os.getenv("DB_HOST", "notesmate-cluster-10018.j77.cockroachlabs.cloud"),
-        "user": os.getenv("DB_USER", "yash"),
-        "password": os.getenv("DB_PASSWORD", "k3O3z8Wdp-Za5gBy_OJQng"),
-        "database": os.getenv("DB_NAME", "notesmatedb"),
-        "port": os.getenv("DB_PORT", "26257"),
+        "host": os.getenv("DB_HOST"),
+        "user": os.getenv("DB_USER"),
+        "password": os.getenv("DB_PASSWORD"),
+        "database": os.getenv("DB_NAME"),
+        "port": os.getenv("DB_PORT"),
         "sslmode": "require"
     }
     logger.debug(f"Connecting to DB with params: {conn_params}")
@@ -95,16 +95,6 @@ def options_handler(path):
     response.headers.add("Access-Control-Max-Age", "86400")
     return response, 200
 
-# Get Deepgram WebSocket URL
-@app.route("/api/get-deepgram-ws", methods=["GET"])
-def get_deepgram_ws():
-    logger.info("Received get-deepgram-ws request")
-    if not os.getenv("DEEPGRAM_API_KEY"):
-        logger.error("Deepgram API key not configured")
-        return jsonify({"error": "Deepgram API key not configured"}), 500
-    ws_url = f"wss://api.deepgram.com/v1/listen?model=nova-3-medical&diarize=true&smart_format=true&punctuate=true&token={os.getenv('DEEPGRAM_API_KEY')}"
-    return jsonify({"wsUrl": ws_url}), 200
-
 # Request OTP
 @app.route("/api/request-otp", methods=["POST"])
 def request_otp():
@@ -148,8 +138,8 @@ def request_otp():
         conn.commit()
         logger.info(f"Generated OTP {otp} for {empemail}")
 
-        gmail_email = os.getenv("GMAIL_EMAIL", "")
-        gmail_app_password = os.getenv("GMAIL_APP_PASSWORD", "")
+        gmail_email = os.getenv("GMAIL_EMAIL")
+        gmail_app_password = os.getenv("GMAIL_APP_PASSWORD")
         if gmail_email and gmail_app_password:
             success = send_otp_email(empemail, otp)
             if not success:
@@ -184,13 +174,13 @@ def send_otp_email(to_email, otp):
     try:
         msg = MIMEText(f"Your Notesmate OTP is: {otp}")
         msg["Subject"] = "Notesmate OTP Verification"
-        msg["From"] = os.getenv("GMAIL_EMAIL", "")
+        msg["From"] = os.getenv("GMAIL_EMAIL")
         msg["To"] = to_email
 
         with smtplib.SMTP("smtp.gmail.com", 587) as server:
             server.starttls()
-            server.login(os.getenv("GMAIL_EMAIL", ""), os.getenv("GMAIL_APP_PASSWORD", ""))
-            server.sendmail(os.getenv("GMAIL_EMAIL", ""), to_email, msg.as_string())
+            server.login(os.getenv("GMAIL_EMAIL"), os.getenv("GMAIL_APP_PASSWORD"))
+            server.sendmail(os.getenv("GMAIL_EMAIL"), to_email, msg.as_string())
             return True
     except Exception as e:
         logger.error(f"Failed to send email to {to_email}: {str(e)}")
