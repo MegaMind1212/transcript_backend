@@ -1,5 +1,5 @@
 import os
-from dotenv import load_dotenv  # For local .env support
+from dotenv import load_dotenv
 import psycopg2
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -8,6 +8,11 @@ import smtplib
 from email.mime.text import MIMEText
 import random
 import traceback
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 load_dotenv()  # Load .env file for local development
 
@@ -23,25 +28,44 @@ CORS(app, resources={
     }
 })
 
-# CockroachDB configuration
+# CockroachDB configuration with validation
 def get_db_connection():
     ssl_ca = os.getenv("SSL_CA")
     if not ssl_ca:
-        raise ValueError("SSL_CA environment variable is not set")
+        raise ValueError("SSL_CA environment variable is not set or empty")
     
     cert_path = "/tmp/cockroachdb_ca.crt"
-    with open(cert_path, "w") as f:
-        f.write(ssl_ca)  # Write raw PEM text directly
+    try:
+        with open(cert_path, "w") as f:
+            f.write(ssl_ca.strip())  # Write raw PEM text and strip whitespace
+        # Verify the file contains valid certificate data
+        with open(cert_path, "r") as f:
+            content = f.read()
+            if not content or "BEGIN CERTIFICATE" not in content:
+                raise ValueError("Failed to write valid certificate to file")
+        logger.debug(f"Certificate file written to {cert_path}")
+    except Exception as e:
+        logger.error(f"Error writing certificate file: {str(e)}")
+        raise
+
+    conn_params = {
+        "host": os.getenv("DB_HOST", ""),
+        "user": os.getenv("DB_USER", ""),
+        "password": os.getenv("DB_PASSWORD", ""),
+        "database": os.getenv("DB_NAME", ""),
+        "port": os.getenv("DB_PORT", "26257"),
+        "sslmode": "verify-full",
+        "sslrootcert": cert_path
+    }
+    logger.debug(f"Connecting to DB with params: {conn_params}")
     
-    return psycopg2.connect(
-        host=os.getenv("DB_HOST", ""),
-        user=os.getenv("DB_USER", ""),
-        password=os.getenv("DB_PASSWORD", ""),
-        database=os.getenv("DB_NAME", ""),
-        port=os.getenv("DB_PORT", "26257"),
-        sslmode="verify-full",
-        sslrootcert=cert_path
-    )
+    try:
+        conn = psycopg2.connect(**conn_params)
+        logger.debug("Database connection established successfully")
+        return conn
+    except psycopg2.Error as e:
+        logger.error(f"Database connection failed: {str(e)}")
+        raise
 
 # Environment variables for Gmail SMTP and Deepgram
 GMAIL_EMAIL = os.getenv("GMAIL_EMAIL", "")
@@ -63,8 +87,10 @@ def init_db():
             )
         """)
         conn.commit()
+        logger.debug("Database initialized successfully")
     except Exception as e:
-        print(f"Error initializing database: {str(e)}")
+        logger.error(f"Error initializing database: {str(e)}")
+        raise
     finally:
         if cursor:
             cursor.close()
@@ -78,8 +104,12 @@ db_initialized = False
 def initialize_database():
     global db_initialized
     if not db_initialized:
-        init_db()
-        db_initialized = True
+        try:
+            init_db()
+            db_initialized = True
+        except Exception as e:
+            logger.error(f"Failed to initialize database: {str(e)}")
+            raise
 
 # OPTIONS handler for preflight requests
 @app.route("/api/<path:path>", methods=["OPTIONS"])
@@ -126,14 +156,13 @@ def request_otp():
         otp = str(random.randint(1000, 9999))
         otp_key = f"{orgid}-{empid}"
 
-        # Store OTP in CockroachDB
         cursor.execute(
             "INSERT INTO otps (key, otp, created_at) VALUES (%s, %s, %s) ON CONFLICT (key) DO UPDATE SET otp = %s, created_at = %s",
             (otp_key, otp, datetime.now(), otp, datetime.now())
         )
         conn.commit()
 
-        print(f"OTP for {empemail}: {otp}")
+        logger.debug(f"OTP for {empemail}: {otp}")
 
         if GMAIL_EMAIL and GMAIL_APP_PASSWORD:
             success = send_otp_email(empemail, otp)
@@ -149,8 +178,8 @@ def request_otp():
         return jsonify({"message": "OTP sent to your registered email address"}), 200
 
     except Exception as e:
-        print(f"Unexpected error: {str(e)}")
-        print(traceback.format_exc())
+        logger.error(f"Unexpected error: {str(e)}")
+        logger.error(traceback.format_exc())
         return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
     finally:
         if cursor:
@@ -172,7 +201,7 @@ def send_otp_email(to_email, otp):
             server.sendmail(GMAIL_EMAIL, to_email, msg.as_string())
             return True
     except Exception as e:
-        print(f"Failed to send email to {to_email}: {str(e)}")
+        logger.error(f"Failed to send email to {to_email}: {str(e)}")
         return False
 
 # Validate OTP
@@ -203,7 +232,6 @@ def validate_otp():
             return jsonify({"error": "OTP not found or expired"}), 400
 
         stored_otp, created_at = result
-        # Check if OTP is expired (e.g., 5 minutes)
         if datetime.now() - created_at > timedelta(minutes=5):
             cursor.execute("DELETE FROM otps WHERE key = %s", (otp_key,))
             conn.commit()
@@ -212,7 +240,6 @@ def validate_otp():
         if stored_otp != entered_otp:
             return jsonify({"error": "Invalid OTP"}), 400
 
-        # Delete OTP after validation
         cursor.execute("DELETE FROM otps WHERE key = %s", (otp_key,))
         conn.commit()
 
@@ -223,8 +250,8 @@ def validate_otp():
         }), 200
 
     except Exception as e:
-        print(f"Unexpected error: {str(e)}")
-        print(traceback.format_exc())
+        logger.error(f"Unexpected error: {str(e)}")
+        logger.error(traceback.format_exc())
         return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
     finally:
         if cursor:
@@ -268,8 +295,7 @@ def register():
                 (orgid, orgname, shortname, address, phone, email)
             )
 
-        cursor.execute("SELECT * FROM employees WHERE orgid = %s AND empid = %s", 
-                      (orgid, empid))
+        cursor.execute("SELECT * FROM employees WHERE orgid = %s AND empid = %s", (orgid, empid))
         if cursor.fetchone():
             return jsonify({"error": "Employee with this empid already exists in this organization"}), 400
 
@@ -284,8 +310,8 @@ def register():
         return jsonify({"message": "Registration successful"}), 200
 
     except Exception as e:
-        print(f"Unexpected error: {str(e)}")
-        print(traceback.format_exc())
+        logger.error(f"Unexpected error: {str(e)}")
+        logger.error(traceback.format_exc())
         return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
     finally:
         if cursor:
@@ -339,8 +365,8 @@ def register_client():
         }), 200
 
     except Exception as e:
-        print(f"Unexpected error: {str(e)}")
-        print(traceback.format_exc())
+        logger.error(f"Unexpected error: {str(e)}")
+        logger.error(traceback.format_exc())
         return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
     finally:
         if cursor:
@@ -378,8 +404,8 @@ def fetch_clients():
         return jsonify({"clients": client_list}), 200
 
     except Exception as e:
-        print(f"Unexpected error: {str(e)}")
-        print(traceback.format_exc())
+        logger.error(f"Unexpected error: {str(e)}")
+        logger.error(traceback.format_exc())
         return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
     finally:
         if cursor:
@@ -426,8 +452,8 @@ def save_transcription():
         return jsonify({"message": "Transcription saved successfully"}), 200
 
     except Exception as e:
-        print(f"Unexpected error: {str(e)}")
-        print(traceback.format_exc())
+        logger.error(f"Unexpected error: {str(e)}")
+        logger.error(traceback.format_exc())
         return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
     finally:
         if cursor:
@@ -477,8 +503,8 @@ def fetch_notes():
         return jsonify({"notes": note_list}), 200
 
     except Exception as e:
-        print(f"Unexpected error: {str(e)}")
-        print(traceback.format_exc())
+        logger.error(f"Unexpected error: {str(e)}")
+        logger.error(traceback.format_exc())
         return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
     finally:
         if cursor:
@@ -516,8 +542,8 @@ def update_note():
         return jsonify({"message": "Transcription updated successfully"}), 200
 
     except Exception as e:
-        print(f"Unexpected error: {str(e)}")
-        print(traceback.format_exc())
+        logger.error(f"Unexpected error: {str(e)}")
+        logger.error(traceback.format_exc())
         return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
     finally:
         if cursor:
