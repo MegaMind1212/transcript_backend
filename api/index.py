@@ -18,15 +18,8 @@ load_dotenv()  # Load .env file for local development
 
 app = Flask(__name__)
 
-# CORS configuration for GitHub Pages frontend
-CORS(app, resources={
-    r"/api/*": {
-        "origins": ["https://megamind1212.github.io/transcript_frontend", "http://localhost:8000"],
-        "methods": ["GET", "POST", "OPTIONS", "PUT", "DELETE"],
-        "allow_headers": ["Content-Type", "Authorization"],
-        "supports_credentials": True
-    }
-})
+# CORS configuration with permissive settings for testing
+CORS(app, resources={r"/api/*": {"origins": ["*"], "methods": ["GET", "POST", "OPTIONS", "PUT", "DELETE"], "allow_headers": ["*"], "supports_credentials": True}})
 
 # CockroachDB configuration using environment variables with sslmode=require
 def get_db_connection():
@@ -36,7 +29,7 @@ def get_db_connection():
         "password": os.getenv("DB_PASSWORD", "k3O3z8Wdp-Za5gBy_OJQng"),
         "database": os.getenv("DB_NAME", "notesmatedb"),
         "port": os.getenv("DB_PORT", "26257"),
-        "sslmode": "require"  # Simplified to avoid certificate file issues
+        "sslmode": "require"
     }
     logger.debug(f"Connecting to DB with params: {conn_params}")
     
@@ -47,11 +40,6 @@ def get_db_connection():
     except psycopg2.Error as e:
         logger.error(f"Database connection failed: {str(e)}")
         raise
-
-# Environment variables for Gmail SMTP and Deepgram
-GMAIL_EMAIL = os.getenv("GMAIL_EMAIL", "")
-GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD", "")
-DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY", "")
 
 # Create OTPs table if not exists
 def init_db():
@@ -82,6 +70,10 @@ def init_db():
 db_initialized = False
 
 @app.before_request
+def log_request():
+    logger.info(f"Received request: {request.method} {request.path} from {request.remote_addr} with headers {dict(request.headers)}")
+
+@app.before_request
 def initialize_database():
     global db_initialized
     if not db_initialized:
@@ -91,24 +83,32 @@ def initialize_database():
         except Exception as e:
             logger.error(f"Failed to initialize database: {str(e)}")
             # Allow request to proceed, handle DB failure in endpoints
-            pass
 
 # OPTIONS handler for preflight requests
 @app.route("/api/<path:path>", methods=["OPTIONS"])
 def options_handler(path):
-    return jsonify({}), 200
+    logger.info(f"Handling OPTIONS request for {path}")
+    response = jsonify({})
+    response.headers.add("Access-Control-Allow-Origin", "*")
+    response.headers.add("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, DELETE")
+    response.headers.add("Access-Control-Allow-Headers", "*")
+    response.headers.add("Access-Control-Max-Age", "86400")
+    return response, 200
 
 # Get Deepgram WebSocket URL
 @app.route("/api/get-deepgram-ws", methods=["GET"])
 def get_deepgram_ws():
-    if not DEEPGRAM_API_KEY:
+    logger.info("Received get-deepgram-ws request")
+    if not os.getenv("DEEPGRAM_API_KEY"):
+        logger.error("Deepgram API key not configured")
         return jsonify({"error": "Deepgram API key not configured"}), 500
-    ws_url = f"wss://api.deepgram.com/v1/listen?model=nova-3-medical&diarize=true&smart_format=true&punctuate=true&token={DEEPGRAM_API_KEY}"
+    ws_url = f"wss://api.deepgram.com/v1/listen?model=nova-3-medical&diarize=true&smart_format=true&punctuate=true&token={os.getenv('DEEPGRAM_API_KEY')}"
     return jsonify({"wsUrl": ws_url}), 200
 
 # Request OTP
 @app.route("/api/request-otp", methods=["POST"])
 def request_otp():
+    logger.info("Received request-otp request")
     conn = None
     cursor = None
     try:
@@ -117,6 +117,7 @@ def request_otp():
         empid = int(data.get("empId"))
 
         if not orgid or not empid:
+            logger.warning("Missing orgid or empid in request")
             return jsonify({"error": "orgid and empid are required"}), 400
 
         conn = get_db_connection()
@@ -129,10 +130,12 @@ def request_otp():
         employee = cursor.fetchone()
 
         if not employee:
+            logger.warning(f"No employee found for orgid={orgid}, empid={empid}")
             return jsonify({"error": "No employee found with this orgid and empid"}), 404
 
         empemail = employee[0]
         if not empemail:
+            logger.warning(f"Employee email not found for orgid={orgid}, empid={empid}")
             return jsonify({"error": "Employee email not found"}), 400
 
         otp = str(random.randint(1000, 9999))
@@ -143,26 +146,33 @@ def request_otp():
             (otp_key, otp, datetime.now(), otp, datetime.now())
         )
         conn.commit()
+        logger.info(f"Generated OTP {otp} for {empemail}")
 
-        logger.debug(f"OTP for {empemail}: {otp}")
-
-        if GMAIL_EMAIL and GMAIL_APP_PASSWORD:
+        gmail_email = os.getenv("GMAIL_EMAIL", "")
+        gmail_app_password = os.getenv("GMAIL_APP_PASSWORD", "")
+        if gmail_email and gmail_app_password:
             success = send_otp_email(empemail, otp)
             if not success:
+                logger.warning(f"Failed to send email to {empemail}")
                 return jsonify({
                     "message": "Failed to send OTP via email. Check the server logs for the OTP."
                 }), 200
         else:
+            logger.warning("Email service not configured")
             return jsonify({
                 "message": "Email service not configured. Check the server logs for the OTP."
             }), 200
 
-        return jsonify({"message": "OTP sent to your registered email address"}), 200
+        response = jsonify({"message": "OTP sent to your registered email address"})
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        return response, 200
 
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}")
         logger.error(traceback.format_exc())
-        return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
+        response = jsonify({"error": f"Unexpected error: {str(e)}"})
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        return response, 500
     finally:
         if cursor:
             cursor.close()
@@ -174,13 +184,13 @@ def send_otp_email(to_email, otp):
     try:
         msg = MIMEText(f"Your Notesmate OTP is: {otp}")
         msg["Subject"] = "Notesmate OTP Verification"
-        msg["From"] = GMAIL_EMAIL
+        msg["From"] = os.getenv("GMAIL_EMAIL", "")
         msg["To"] = to_email
 
         with smtplib.SMTP("smtp.gmail.com", 587) as server:
             server.starttls()
-            server.login(GMAIL_EMAIL, GMAIL_APP_PASSWORD)
-            server.sendmail(GMAIL_EMAIL, to_email, msg.as_string())
+            server.login(os.getenv("GMAIL_EMAIL", ""), os.getenv("GMAIL_APP_PASSWORD", ""))
+            server.sendmail(os.getenv("GMAIL_EMAIL", ""), to_email, msg.as_string())
             return True
     except Exception as e:
         logger.error(f"Failed to send email to {to_email}: {str(e)}")
@@ -189,6 +199,7 @@ def send_otp_email(to_email, otp):
 # Validate OTP
 @app.route("/api/validate-otp", methods=["POST"])
 def validate_otp():
+    logger.info("Received validate-otp request")
     conn = None
     cursor = None
     try:
@@ -198,6 +209,7 @@ def validate_otp():
         entered_otp = data.get("otp")
 
         if not orgid or not empid or not entered_otp:
+            logger.warning("Missing orgid, empid, or otp in request")
             return jsonify({"error": "orgid, empid, and OTP are required"}), 400
 
         conn = get_db_connection()
@@ -211,30 +223,37 @@ def validate_otp():
         result = cursor.fetchone()
 
         if not result:
+            logger.warning(f"No OTP found for key {otp_key}")
             return jsonify({"error": "OTP not found or expired"}), 400
 
         stored_otp, created_at = result
         if datetime.now() - created_at > timedelta(minutes=5):
             cursor.execute("DELETE FROM otps WHERE key = %s", (otp_key,))
             conn.commit()
+            logger.warning(f"OTP expired for key {otp_key}")
             return jsonify({"error": "OTP expired"}), 400
 
         if stored_otp != entered_otp:
+            logger.warning(f"Invalid OTP entered for key {otp_key}")
             return jsonify({"error": "Invalid OTP"}), 400
 
         cursor.execute("DELETE FROM otps WHERE key = %s", (otp_key,))
         conn.commit()
 
-        return jsonify({
+        response = jsonify({
             "message": "OTP validated successfully",
             "orgId": orgid,
             "empId": empid
-        }), 200
+        })
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        return response, 200
 
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}")
         logger.error(traceback.format_exc())
-        return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
+        response = jsonify({"error": f"Unexpected error: {str(e)}"})
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        return response, 500
     finally:
         if cursor:
             cursor.close()
@@ -244,6 +263,7 @@ def validate_otp():
 # Register new user
 @app.route("/api/register", methods=["POST"])
 def register():
+    logger.info("Received register request")
     conn = None
     cursor = None
     try:
@@ -261,6 +281,7 @@ def register():
         empemail = data.get("empEmail")
 
         if not all([orgid, orgname, shortname, address, phone, email, empid, empname, empshortname, empphone, empemail]):
+            logger.warning("Missing required fields in register request")
             return jsonify({"error": "All fields are required"}), 400
 
         conn = get_db_connection()
@@ -279,6 +300,7 @@ def register():
 
         cursor.execute("SELECT * FROM employees WHERE orgid = %s AND empid = %s", (orgid, empid))
         if cursor.fetchone():
+            logger.warning(f"Employee with empid={empid} already exists in orgid={orgid}")
             return jsonify({"error": "Employee with this empid already exists in this organization"}), 400
 
         cursor.execute(
@@ -289,12 +311,16 @@ def register():
         )
 
         conn.commit()
-        return jsonify({"message": "Registration successful"}), 200
+        response = jsonify({"message": "Registration successful"})
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        return response, 200
 
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}")
         logger.error(traceback.format_exc())
-        return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
+        response = jsonify({"error": f"Unexpected error: {str(e)}"})
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        return response, 500
     finally:
         if cursor:
             cursor.close()
@@ -304,6 +330,7 @@ def register():
 # Register new client
 @app.route("/api/register-client", methods=["POST"])
 def register_client():
+    logger.info("Received register-client request")
     conn = None
     cursor = None
     try:
@@ -315,6 +342,7 @@ def register_client():
         clientemail = data.get("clientEmail")
 
         if not all([orgid, clientname, clientshortname, clientphone, clientemail]):
+            logger.warning("Missing required fields in register-client request")
             return jsonify({"error": "All fields are required"}), 400
 
         conn = get_db_connection()
@@ -323,6 +351,7 @@ def register_client():
         cursor.execute("SELECT * FROM organizations WHERE orgid = %s", (orgid,))
         org_exists = cursor.fetchone()
         if not org_exists:
+            logger.warning(f"Organization not found for orgid={orgid}")
             return jsonify({"error": "Organization not found"}), 404
 
         cursor.execute("SELECT MAX(clientid) FROM clients WHERE orgid = %s", (orgid,))
@@ -331,6 +360,7 @@ def register_client():
 
         cursor.execute("SELECT * FROM clients WHERE orgid = %s AND clientid = %s", (orgid, new_clientid))
         if cursor.fetchone():
+            logger.warning(f"Client with clientid={new_clientid} already exists in orgid={orgid}")
             return jsonify({"error": "Client with this clientid already exists in this organization"}), 400
 
         cursor.execute(
@@ -341,15 +371,19 @@ def register_client():
         )
 
         conn.commit()
-        return jsonify({
+        response = jsonify({
             "message": "Client registered successfully",
             "clientId": new_clientid
-        }), 200
+        })
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        return response, 200
 
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}")
         logger.error(traceback.format_exc())
-        return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
+        response = jsonify({"error": f"Unexpected error: {str(e)}"})
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        return response, 500
     finally:
         if cursor:
             cursor.close()
@@ -359,6 +393,7 @@ def register_client():
 # Fetch clients
 @app.route("/api/fetch-clients", methods=["POST"])
 def fetch_clients():
+    logger.info("Received fetch-clients request")
     conn = None
     cursor = None
     try:
@@ -366,6 +401,7 @@ def fetch_clients():
         orgid = int(data.get("orgId"))
 
         if not orgid:
+            logger.warning("Missing orgid in fetch-clients request")
             return jsonify({"error": "orgid is required"}), 400
 
         conn = get_db_connection()
@@ -383,12 +419,16 @@ def fetch_clients():
             "ClientShortname": row[2]
         } for row in clients]
 
-        return jsonify({"clients": client_list}), 200
+        response = jsonify({"clients": client_list})
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        return response, 200
 
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}")
         logger.error(traceback.format_exc())
-        return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
+        response = jsonify({"error": f"Unexpected error: {str(e)}"})
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        return response, 500
     finally:
         if cursor:
             cursor.close()
@@ -398,6 +438,7 @@ def fetch_clients():
 # Save transcription
 @app.route("/api/save-transcription", methods=["POST"])
 def save_transcription():
+    logger.info("Received save-transcription request")
     conn = None
     cursor = None
     try:
@@ -409,6 +450,7 @@ def save_transcription():
         audionotes = data.get("audioData")
 
         if not all([orgid, empid, clientid, transcriptiontext]):
+            logger.warning("Missing required fields in save-transcription request")
             return jsonify({"error": "orgid, empid, clientid, and transcriptiontext are required"}), 400
 
         conn = get_db_connection()
@@ -419,9 +461,13 @@ def save_transcription():
             (orgid, clientid)
         )
         if not cursor.fetchone():
+            logger.warning(f"Invalid clientid={clientid} for orgid={orgid}")
             return jsonify({"error": "Invalid clientid for this organization"}), 404
 
-        audio_binary = base64.b64decode(audionotes) if audionotes else None
+        audio_binary = None
+        if audionotes:
+            import base64
+            audio_binary = base64.b64decode(audionotes)
 
         cursor.execute(
             """INSERT INTO notes 
@@ -431,12 +477,16 @@ def save_transcription():
         )
 
         conn.commit()
-        return jsonify({"message": "Transcription saved successfully"}), 200
+        response = jsonify({"message": "Transcription saved successfully"})
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        return response, 200
 
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}")
         logger.error(traceback.format_exc())
-        return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
+        response = jsonify({"error": f"Unexpected error: {str(e)}"})
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        return response, 500
     finally:
         if cursor:
             cursor.close()
@@ -446,6 +496,7 @@ def save_transcription():
 # Fetch notes
 @app.route("/api/fetch-notes", methods=["POST"])
 def fetch_notes():
+    logger.info("Received fetch-notes request")
     conn = None
     cursor = None
     try:
@@ -456,6 +507,7 @@ def fetch_notes():
         selecteddate = data.get("selectedDate")
 
         if not all([orgid, empid, clientid]):
+            logger.warning("Missing required fields in fetch-notes request")
             return jsonify({"error": "orgid, empid, and clientid are required"}), 400
 
         conn = get_db_connection()
@@ -476,18 +528,23 @@ def fetch_notes():
         cursor.execute(query, params)
         notes = cursor.fetchall()
 
+        import base64
         note_list = [{
             "DateTime": row[0].isoformat(),
             "TextNotes": row[1],
             "AudioNotes": base64.b64encode(row[2]).decode("utf-8") if row[2] else None
         } for row in notes]
 
-        return jsonify({"notes": note_list}), 200
+        response = jsonify({"notes": note_list})
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        return response, 200
 
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}")
         logger.error(traceback.format_exc())
-        return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
+        response = jsonify({"error": f"Unexpected error: {str(e)}"})
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        return response, 500
     finally:
         if cursor:
             cursor.close()
@@ -497,6 +554,7 @@ def fetch_notes():
 # Update note transcription
 @app.route("/api/update-note", methods=["POST"])
 def update_note():
+    logger.info("Received update-note request")
     conn = None
     cursor = None
     try:
@@ -508,6 +566,7 @@ def update_note():
         newText = data.get("newText")
 
         if not all([orgid, empid, clientid, dateTime, newText]):
+            logger.warning("Missing required fields in update-note request")
             return jsonify({"error": "orgid, empid, clientid, dateTime, and newText are required"}), 400
 
         conn = get_db_connection()
@@ -521,12 +580,16 @@ def update_note():
         )
         conn.commit()
 
-        return jsonify({"message": "Transcription updated successfully"}), 200
+        response = jsonify({"message": "Transcription updated successfully"})
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        return response, 200
 
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}")
         logger.error(traceback.format_exc())
-        return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
+        response = jsonify({"error": f"Unexpected error: {str(e)}"})
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        return response, 500
     finally:
         if cursor:
             cursor.close()
@@ -536,7 +599,10 @@ def update_note():
 # Default route
 @app.route("/")
 def index():
-    return jsonify({"message": "NotesMate API is running"})
+    logger.info("Received index request")
+    response = jsonify({"message": "NotesMate API is running"})
+    response.headers.add("Access-Control-Allow-Origin", "*")
+    return response
 
 # Custom Vercel handler for serverless deployment
 def vercel_handler(request):
