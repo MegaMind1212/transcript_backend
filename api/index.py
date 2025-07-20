@@ -10,7 +10,6 @@ import random
 import traceback
 import logging
 import re
-import pytz
 
 # Set up logging
 logging.basicConfig(level=logging.DEBUG)
@@ -22,6 +21,9 @@ app = Flask(__name__)
 
 # CORS configuration with permissive settings for testing
 CORS(app, resources={r"/api/*": {"origins": ["*"], "methods": ["GET", "POST", "OPTIONS", "PUT", "DELETE"], "allow_headers": ["*"], "supports_credentials": True}})
+
+# IST offset (UTC+5:30)
+IST_OFFSET = timedelta(hours=5, minutes=30)
 
 # CockroachDB configuration using only environment variables
 def get_db_connection():
@@ -132,10 +134,11 @@ def request_otp():
 
         otp = str(random.randint(1000, 9999))
         otp_key = f"{orgid}-{empid}"
+        current_time = datetime.utcnow() + IST_OFFSET
 
         cursor.execute(
             "INSERT INTO otps (key, otp, created_at) VALUES (%s, %s, %s) ON CONFLICT (key) DO UPDATE SET otp = %s, created_at = %s",
-            (otp_key, otp, datetime.now(pytz.timezone('Asia/Kolkata')), otp, datetime.now(pytz.timezone('Asia/Kolkata')))
+            (otp_key, otp, current_time, otp, current_time)
         )
         conn.commit()
         logger.info(f"Generated OTP {otp} for {empemail}")
@@ -219,7 +222,8 @@ def validate_otp():
             return jsonify({"error": "OTP not found or expired"}), 400
 
         stored_otp, created_at = result
-        if datetime.now(pytz.timezone('Asia/Kolkata')) - created_at > timedelta(minutes=5):
+        current_time = datetime.utcnow() + IST_OFFSET
+        if current_time - created_at > timedelta(minutes=5):
             cursor.execute("DELETE FROM otps WHERE key = %s", (otp_key,))
             conn.commit()
             logger.warning(f"OTP expired for key {otp_key}")
@@ -469,11 +473,12 @@ def save_transcription():
             import base64
             audio_binary = base64.b64decode(audionotes)
 
+        current_time = datetime.utcnow() + IST_OFFSET
         cursor.execute(
             """INSERT INTO notes 
             (orgid, empid, clientid, meetingid, datetime, audionotes, textnotes) 
             VALUES (%s, %s, %s, nextval('notes_seq'), %s, %s, %s)""",
-            (orgid, empid, clientid, datetime.now(pytz.timezone('Asia/Kolkata')), psycopg2.Binary(audio_binary) if audio_binary else None, transcriptiontext)
+            (orgid, empid, clientid, current_time, psycopg2.Binary(audio_binary) if audio_binary else None, transcriptiontext)
         )
 
         conn.commit()
@@ -530,7 +535,7 @@ def fetch_notes():
 
         import base64
         note_list = [{
-            "DateTime": row[0].astimezone(pytz.timezone('Asia/Kolkata')).strftime("%d-%b-%Y %I:%M %p"),
+            "DateTime": (row[0] + IST_OFFSET).strftime("%d-%b-%Y %I:%M %p"),
             "TextNotes": row[1],
             "AudioNotes": base64.b64encode(row[2]).decode("utf-8") if row[2] else None
         } for row in notes]
@@ -569,9 +574,9 @@ def update_note():
             logger.warning("Missing required fields in update-note request")
             return jsonify({"error": "orgid, empid, clientid, dateTime, and newText are required"}), 400
 
-        # Convert dateTime string to datetime object with IST
+        # Convert dateTime string to datetime object with IST offset
         try:
-            dt = datetime.strptime(dateTime, "%d-%b-%Y %I:%M %p").replace(tzinfo=pytz.timezone('Asia/Kolkata'))
+            dt = datetime.strptime(dateTime, "%d-%b-%Y %I:%M %p") + IST_OFFSET
         except ValueError as e:
             logger.error(f"Invalid datetime format: {dateTime}, error: {str(e)}")
             return jsonify({"error": "Invalid dateTime format. Use dd-mmm-yyyy hh:mm AM/PM"}), 400
