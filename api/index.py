@@ -9,6 +9,7 @@ from email.mime.text import MIMEText
 import random
 import traceback
 import logging
+import re
 
 # Set up logging
 logging.basicConfig(level=logging.DEBUG)
@@ -327,13 +328,21 @@ def register_client():
         data = request.get_json()
         orgid = int(data.get("orgId"))
         clientname = data.get("clientName")
-        clientshortname = data.get("clientShortname")
-        clientphone = data.get("clientPhone")
+        foreignid = data.get("foreignId")
+        clientphone = data.get("clientPhone") or "NA"
         clientemail = data.get("clientEmail")
 
-        if not all([orgid, clientname, clientshortname, clientphone, clientemail]):
+        if not all([orgid, clientname, foreignid, clientemail]):
             logger.warning("Missing required fields in register-client request")
             return jsonify({"error": "All fields are required"}), 400
+
+        if len(foreignid) < 1 or len(foreignid) > 16:
+            logger.warning("Invalid foreignid length")
+            return jsonify({"error": "Foreign ID must be between 1 and 16 characters"}), 400
+
+        if clientphone != "NA" and not re.match(r'\+91[0-9]{10}', clientphone):
+            logger.warning("Invalid client phone format")
+            return jsonify({"error": "If provided, client phone must be in the format +91 followed by 10 digits"}), 400
 
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -355,9 +364,9 @@ def register_client():
 
         cursor.execute(
             """INSERT INTO clients 
-            (clientid, orgid, clientname, clientshortname, clientphone, clientemail) 
+            (clientid, orgid, clientname, foreignid, clientphone, clientemail) 
             VALUES (%s, %s, %s, %s, %s, %s)""",
-            (new_clientid, orgid, clientname, clientshortname, clientphone, clientemail)
+            (new_clientid, orgid, clientname, foreignid, clientphone, clientemail)
         )
 
         conn.commit()
@@ -398,7 +407,7 @@ def fetch_clients():
         cursor = conn.cursor()
 
         cursor.execute(
-            "SELECT clientid, clientname, clientshortname FROM clients WHERE orgid = %s",
+            "SELECT clientid, clientname, foreignid FROM clients WHERE orgid = %s",
             (orgid,)
         )
         clients = cursor.fetchall()
@@ -406,7 +415,7 @@ def fetch_clients():
         client_list = [{
             "ClientID": row[0],
             "ClientName": row[1],
-            "ClientShortname": row[2]
+            "ForeignID": row[2]
         } for row in clients]
 
         response = jsonify({"clients": client_list})
@@ -520,7 +529,7 @@ def fetch_notes():
 
         import base64
         note_list = [{
-            "DateTime": row[0].isoformat(),
+            "DateTime": row[0].strftime("%d%m%Y %I:%M %p"),
             "TextNotes": row[1],
             "AudioNotes": base64.b64encode(row[2]).decode("utf-8") if row[2] else None
         } for row in notes]
@@ -552,12 +561,18 @@ def update_note():
         orgid = int(data.get("orgId"))
         empid = int(data.get("empId"))
         clientid = int(data.get("clientId"))
-        dateTime = data.get("dateTime")
+        dateTime = data.get("dateTime")  # Expecting ISO format or string from frontend
         newText = data.get("newText")
 
         if not all([orgid, empid, clientid, dateTime, newText]):
             logger.warning("Missing required fields in update-note request")
             return jsonify({"error": "orgid, empid, clientid, dateTime, and newText are required"}), 400
+
+        # Convert dateTime string to datetime object if needed
+        try:
+            dt = datetime.strptime(dateTime, "%d%m%Y %I:%M %p")
+        except ValueError:
+            dt = datetime.fromisoformat(dateTime.replace(" ", "T"))
 
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -566,7 +581,7 @@ def update_note():
             """UPDATE notes 
             SET textnotes = %s 
             WHERE orgid = %s AND empid = %s AND clientid = %s AND datetime = %s""",
-            (newText, orgid, empid, clientid, dateTime)
+            (newText, orgid, empid, clientid, dt)
         )
         conn.commit()
 
