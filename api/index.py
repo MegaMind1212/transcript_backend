@@ -529,7 +529,7 @@ def fetch_notes():
 
         import base64
         note_list = [{
-            "DateTime": row[0].strftime("%d%m%Y %I:%M %p"),
+            "DateTime": row[0].strftime("%d-%b-%Y %I:%M %p"),
             "TextNotes": row[1],
             "AudioNotes": base64.b64encode(row[2]).decode("utf-8") if row[2] else None
         } for row in notes]
@@ -561,16 +561,16 @@ def update_note():
         orgid = int(data.get("orgId"))
         empid = int(data.get("empId"))
         clientid = int(data.get("clientId"))
-        dateTime = data.get("dateTime")  # Expecting ISO format or string from frontend
+        dateTime = data.get("dateTime")  # Expecting "dd-mmm-yyyy hh:mm AM/PM" or ISO format
         newText = data.get("newText")
 
         if not all([orgid, empid, clientid, dateTime, newText]):
             logger.warning("Missing required fields in update-note request")
             return jsonify({"error": "orgid, empid, clientid, dateTime, and newText are required"}), 400
 
-        # Convert dateTime string to datetime object if needed
+        # Convert dateTime string to datetime object
         try:
-            dt = datetime.strptime(dateTime, "%d%m%Y %I:%M %p")
+            dt = datetime.strptime(dateTime, "%d-%b-%Y %I:%M %p")
         except ValueError:
             dt = datetime.fromisoformat(dateTime.replace(" ", "T"))
 
