@@ -10,6 +10,7 @@ import random
 import traceback
 import logging
 import re
+import pytz
 
 # Set up logging
 logging.basicConfig(level=logging.DEBUG)
@@ -134,7 +135,7 @@ def request_otp():
 
         cursor.execute(
             "INSERT INTO otps (key, otp, created_at) VALUES (%s, %s, %s) ON CONFLICT (key) DO UPDATE SET otp = %s, created_at = %s",
-            (otp_key, otp, datetime.now(), otp, datetime.now())
+            (otp_key, otp, datetime.now(pytz.timezone('Asia/Kolkata')), otp, datetime.now(pytz.timezone('Asia/Kolkata')))
         )
         conn.commit()
         logger.info(f"Generated OTP {otp} for {empemail}")
@@ -218,7 +219,7 @@ def validate_otp():
             return jsonify({"error": "OTP not found or expired"}), 400
 
         stored_otp, created_at = result
-        if datetime.now() - created_at > timedelta(minutes=5):
+        if datetime.now(pytz.timezone('Asia/Kolkata')) - created_at > timedelta(minutes=5):
             cursor.execute("DELETE FROM otps WHERE key = %s", (otp_key,))
             conn.commit()
             logger.warning(f"OTP expired for key {otp_key}")
@@ -472,7 +473,7 @@ def save_transcription():
             """INSERT INTO notes 
             (orgid, empid, clientid, meetingid, datetime, audionotes, textnotes) 
             VALUES (%s, %s, %s, nextval('notes_seq'), %s, %s, %s)""",
-            (orgid, empid, clientid, datetime.now(), psycopg2.Binary(audio_binary) if audio_binary else None, transcriptiontext)
+            (orgid, empid, clientid, datetime.now(pytz.timezone('Asia/Kolkata')), psycopg2.Binary(audio_binary) if audio_binary else None, transcriptiontext)
         )
 
         conn.commit()
@@ -529,7 +530,7 @@ def fetch_notes():
 
         import base64
         note_list = [{
-            "DateTime": row[0].strftime("%d-%b-%Y %I:%M %p"),
+            "DateTime": row[0].astimezone(pytz.timezone('Asia/Kolkata')).strftime("%d-%b-%Y %I:%M %p"),
             "TextNotes": row[1],
             "AudioNotes": base64.b64encode(row[2]).decode("utf-8") if row[2] else None
         } for row in notes]
@@ -561,18 +562,19 @@ def update_note():
         orgid = int(data.get("orgId"))
         empid = int(data.get("empId"))
         clientid = int(data.get("clientId"))
-        dateTime = data.get("dateTime")  # Expecting "dd-mmm-yyyy hh:mm AM/PM" or ISO format
+        dateTime = data.get("dateTime")  # Expecting "dd-mmm-yyyy hh:mm AM/PM"
         newText = data.get("newText")
 
         if not all([orgid, empid, clientid, dateTime, newText]):
             logger.warning("Missing required fields in update-note request")
             return jsonify({"error": "orgid, empid, clientid, dateTime, and newText are required"}), 400
 
-        # Convert dateTime string to datetime object
+        # Convert dateTime string to datetime object with IST
         try:
-            dt = datetime.strptime(dateTime, "%d-%b-%Y %I:%M %p")
-        except ValueError:
-            dt = datetime.fromisoformat(dateTime.replace(" ", "T"))
+            dt = datetime.strptime(dateTime, "%d-%b-%Y %I:%M %p").replace(tzinfo=pytz.timezone('Asia/Kolkata'))
+        except ValueError as e:
+            logger.error(f"Invalid datetime format: {dateTime}, error: {str(e)}")
+            return jsonify({"error": "Invalid dateTime format. Use dd-mmm-yyyy hh:mm AM/PM"}), 400
 
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -583,6 +585,9 @@ def update_note():
             WHERE orgid = %s AND empid = %s AND clientid = %s AND datetime = %s""",
             (newText, orgid, empid, clientid, dt)
         )
+        if cursor.rowcount == 0:
+            logger.warning(f"No note found to update with datetime={dt}")
+            return jsonify({"error": "No matching note found to update"}), 404
         conn.commit()
 
         response = jsonify({"message": "Transcription updated successfully"})
