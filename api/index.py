@@ -134,7 +134,7 @@ def request_otp():
 
         otp = str(random.randint(1000, 9999))
         otp_key = f"{orgid}-{empid}"
-        current_time = datetime.utcnow() + IST_OFFSET
+        current_time = datetime.utcnow()
 
         cursor.execute(
             "INSERT INTO otps (key, otp, created_at) VALUES (%s, %s, %s) ON CONFLICT (key) DO UPDATE SET otp = %s, created_at = %s",
@@ -222,7 +222,7 @@ def validate_otp():
             return jsonify({"error": "OTP not found or expired"}), 400
 
         stored_otp, created_at = result
-        current_time = datetime.utcnow() + IST_OFFSET
+        current_time = datetime.utcnow()
         if current_time - created_at > timedelta(minutes=5):
             cursor.execute("DELETE FROM otps WHERE key = %s", (otp_key,))
             conn.commit()
@@ -473,7 +473,7 @@ def save_transcription():
             import base64
             audio_binary = base64.b64decode(audionotes)
 
-        current_time = datetime.utcnow() + IST_OFFSET
+        current_time = datetime.utcnow()
         cursor.execute(
             """INSERT INTO notes 
             (orgid, empid, clientid, meetingid, datetime, audionotes, textnotes) 
@@ -535,7 +535,7 @@ def fetch_notes():
 
         import base64
         note_list = [{
-            "DateTime": (row[0] + IST_OFFSET).strftime("%d-%b-%Y %I:%M %p"),
+            "DateTime": row[0].strftime("%d-%b-%Y %I:%M %p"),  # Return raw UTC, let frontend handle offset
             "TextNotes": row[1],
             "AudioNotes": base64.b64encode(row[2]).decode("utf-8") if row[2] else None
         } for row in notes]
@@ -564,7 +564,7 @@ def update_note():
     cursor = None
     try:
         data = request.get_json()
-        logger.debug(f"Received data: {data}")
+        logger.debug(f"Received update data: {data}")
         orgid = int(data.get("orgId"))
         empid = int(data.get("empId"))
         clientid = int(data.get("clientId"))
@@ -575,10 +575,12 @@ def update_note():
             logger.warning("Missing required fields in update-note request")
             return jsonify({"error": "orgid, empid, clientid, dateTime, and newText are required"}), 400
 
-        # Convert dateTime string to datetime object with IST offset
+        # Parse incoming dateTime to UTC
         try:
-            dt = datetime.strptime(dateTime, "%d-%b-%Y %I:%M %p") + IST_OFFSET - IST_OFFSET  # Normalize to UTC first, then apply offset
-            logger.debug(f"Parsed datetime: {dt}")
+            dt = datetime.strptime(dateTime, "%d-%b-%Y %I:%M %p")
+            # Convert to UTC (assuming input is IST, subtract IST_OFFSET)
+            dt_utc = dt - IST_OFFSET
+            logger.debug(f"Parsed datetime (UTC): {dt_utc}")
         except ValueError as e:
             logger.error(f"Invalid datetime format: {dateTime}, error: {str(e)}")
             return jsonify({"error": "Invalid dateTime format. Use dd-mmm-yyyy hh:mm AM/PM"}), 400
@@ -590,13 +592,13 @@ def update_note():
             """UPDATE notes 
             SET textnotes = %s 
             WHERE orgid = %s AND empid = %s AND clientid = %s AND datetime = %s""",
-            (newText, orgid, empid, clientid, dt)
+            (newText, orgid, empid, clientid, dt_utc)
         )
         if cursor.rowcount == 0:
-            logger.warning(f"No note found to update with datetime={dt}")
+            logger.warning(f"No note found to update with datetime={dt_utc}")
             return jsonify({"error": "No matching note found to update"}), 404
         conn.commit()
-        logger.info(f"Updated note with datetime={dt}")
+        logger.info(f"Successfully updated note with datetime={dt_utc}")
 
         response = jsonify({"message": "Transcription updated successfully"})
         response.headers.add("Access-Control-Allow-Origin", "*")
