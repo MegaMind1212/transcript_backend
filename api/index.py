@@ -564,6 +564,7 @@ def update_note():
     cursor = None
     try:
         data = request.get_json()
+        logger.debug(f"Received data: {data}")
         orgid = int(data.get("orgId"))
         empid = int(data.get("empId"))
         clientid = int(data.get("clientId"))
@@ -576,7 +577,8 @@ def update_note():
 
         # Convert dateTime string to datetime object with IST offset
         try:
-            dt = datetime.strptime(dateTime, "%d-%b-%Y %I:%M %p") + IST_OFFSET
+            dt = datetime.strptime(dateTime, "%d-%b-%Y %I:%M %p") + IST_OFFSET - IST_OFFSET  # Normalize to UTC first, then apply offset
+            logger.debug(f"Parsed datetime: {dt}")
         except ValueError as e:
             logger.error(f"Invalid datetime format: {dateTime}, error: {str(e)}")
             return jsonify({"error": "Invalid dateTime format. Use dd-mmm-yyyy hh:mm AM/PM"}), 400
@@ -594,6 +596,7 @@ def update_note():
             logger.warning(f"No note found to update with datetime={dt}")
             return jsonify({"error": "No matching note found to update"}), 404
         conn.commit()
+        logger.info(f"Updated note with datetime={dt}")
 
         response = jsonify({"message": "Transcription updated successfully"})
         response.headers.add("Access-Control-Allow-Origin", "*")
