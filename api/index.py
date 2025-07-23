@@ -341,7 +341,7 @@ def register_client():
             logger.warning("Missing required fields in register-client request")
             return jsonify({"error": "All fields are required"}), 400
 
-        if len(foreignid) < 1 || len(foreignid) > 16:
+        if len(foreignid) < 1 or len(foreignid) > 16:
             logger.warning("Invalid foreignid length")
             return jsonify({"error": "Foreign ID must be between 1 and 16 characters"}), 400
 
@@ -535,7 +535,7 @@ def fetch_notes():
 
         import base64
         note_list = [{
-            "DateTime": row[0].strftime("%d-%b-%Y %H:%M"),  # 24-hour format
+            "DateTime": row[0].strftime("%d-%b-%Y %I:%M %p"),  # Return raw UTC, let frontend handle offset
             "TextNotes": row[1],
             "AudioNotes": base64.b64encode(row[2]).decode("utf-8") if row[2] else None
         } for row in notes]
@@ -578,8 +578,9 @@ def update_note():
         # Parse incoming dateTime to UTC
         try:
             dt = datetime.strptime(dateTime, "%d-%b-%Y %I:%M %p")
+            # Convert to UTC (assuming input is IST, subtract IST_OFFSET)
             dt_utc = dt - IST_OFFSET
-            logger.debug(f"Parsed datetime (IST): {dt}, Converted to UTC: {dt_utc}")
+            logger.debug(f"Parsed datetime (UTC): {dt_utc}")
         except ValueError as e:
             logger.error(f"Invalid datetime format: {dateTime}, error: {str(e)}")
             return jsonify({"error": "Invalid dateTime format. Use dd-mmm-yyyy hh:mm AM/PM"}), 400
@@ -587,21 +588,17 @@ def update_note():
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        # Use a 10-minute range to account for discrepancies
-        dt_utc_start = dt_utc - timedelta(minutes=5)
-        dt_utc_end = dt_utc + timedelta(minutes=5)
-        logger.debug(f"Querying update with range: {dt_utc_start} to {dt_utc_end}")
         cursor.execute(
             """UPDATE notes 
             SET textnotes = %s 
-            WHERE orgid = %s AND empid = %s AND clientid = %s AND datetime BETWEEN %s AND %s""",
-            (newText, orgid, empid, clientid, dt_utc_start, dt_utc_end)
+            WHERE orgid = %s AND empid = %s AND clientid = %s AND datetime = %s""",
+            (newText, orgid, empid, clientid, dt_utc)
         )
-        conn.commit()
         if cursor.rowcount == 0:
-            logger.warning(f"No note found to update with datetime range {dt_utc_start} to {dt_utc_end}")
+            logger.warning(f"No note found to update with datetime={dt_utc}")
             return jsonify({"error": "No matching note found to update"}), 404
-        logger.info(f"Successfully updated note with datetime range {dt_utc_start} to {dt_utc_end}")
+        conn.commit()
+        logger.info(f"Successfully updated note with datetime={dt_utc}")
 
         response = jsonify({"message": "Transcription updated successfully"})
         response.headers.add("Access-Control-Allow-Origin", "*")
@@ -617,10 +614,7 @@ def update_note():
         if cursor:
             cursor.close()
         if conn:
-            try:
-                conn.close()
-            except Exception as e:
-                logger.error(f"Failed to close database connection: {str(e)}")
+            conn.close()
 
 # Default route
 @app.route("/")
