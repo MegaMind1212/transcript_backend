@@ -535,7 +535,7 @@ def fetch_notes():
 
         import base64
         note_list = [{
-            "DateTime": row[0].strftime("%d-%b-%Y %H:%M"),  # Use 24-hour format for consistency
+            "DateTime": row[0].strftime("%d-%b-%Y %H:%M"),  # 24-hour format
             "TextNotes": row[1],
             "AudioNotes": base64.b64encode(row[2]).decode("utf-8") if row[2] else None
         } for row in notes]
@@ -568,28 +568,21 @@ def update_note():
         orgid = int(data.get("orgId"))
         empid = int(data.get("empId"))
         clientid = int(data.get("clientId"))
-        dateTime = data.get("dateTime")  # Expecting "dd-mmm-yyyy hh:mm AM/PM" or "dd-mmm-yyyy HH:mm"
+        dateTime = data.get("dateTime")  # Expecting "dd-mmm-yyyy hh:mm AM/PM"
         newText = data.get("newText")
 
         if not all([orgid, empid, clientid, dateTime, newText]):
             logger.warning("Missing required fields in update-note request")
             return jsonify({"error": "orgid, empid, clientid, dateTime, and newText are required"}), 400
 
-        # Parse incoming dateTime to UTC, supporting both 12-hour and 24-hour formats
+        # Parse incoming dateTime to UTC
         try:
-            dt = None
-            # Try 12-hour format first
-            try:
-                dt = datetime.strptime(dateTime, "%d-%b-%Y %I:%M %p")
-            except ValueError:
-                # Fall back to 24-hour format
-                dt = datetime.strptime(dateTime, "%d-%b-%Y %H:%M")
-            # Convert to UTC (assuming input is IST, subtract IST_OFFSET)
+            dt = datetime.strptime(dateTime, "%d-%b-%Y %I:%M %p")
             dt_utc = dt - IST_OFFSET
             logger.debug(f"Parsed datetime (IST): {dt}, Converted to UTC: {dt_utc}")
         except ValueError as e:
             logger.error(f"Invalid datetime format: {dateTime}, error: {str(e)}")
-            return jsonify({"error": "Invalid dateTime format. Use dd-mmm-yyyy hh:mm AM/PM or dd-mmm-yyyy HH:mm"}), 400
+            return jsonify({"error": "Invalid dateTime format. Use dd-mmm-yyyy hh:mm AM/PM"}), 400
 
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -604,10 +597,10 @@ def update_note():
             WHERE orgid = %s AND empid = %s AND clientid = %s AND datetime BETWEEN %s AND %s""",
             (newText, orgid, empid, clientid, dt_utc_start, dt_utc_end)
         )
+        conn.commit()
         if cursor.rowcount == 0:
             logger.warning(f"No note found to update with datetime range {dt_utc_start} to {dt_utc_end}")
             return jsonify({"error": "No matching note found to update"}), 404
-        conn.commit()
         logger.info(f"Successfully updated note with datetime range {dt_utc_start} to {dt_utc_end}")
 
         response = jsonify({"message": "Transcription updated successfully"})
@@ -624,7 +617,10 @@ def update_note():
         if cursor:
             cursor.close()
         if conn:
-            conn.close()
+            try:
+                conn.close()
+            except Exception as e:
+                logger.error(f"Failed to close database connection: {str(e)}")
 
 # Default route
 @app.route("/")
