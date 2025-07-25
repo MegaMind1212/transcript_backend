@@ -341,7 +341,7 @@ def register_client():
             logger.warning("Missing required fields in register-client request")
             return jsonify({"error": "All fields are required"}), 400
 
-        if len(foreignid) < 1 or len(foreignid) > 16:
+        if len(foreignid) < 1 || len(foreignid) > 16:
             logger.warning("Invalid foreignid length")
             return jsonify({"error": "Foreign ID must be between 1 and 16 characters"}), 400
 
@@ -535,7 +535,7 @@ def fetch_notes():
 
         import base64
         note_list = [{
-            "DateTime": row[0].strftime("%d-%b-%Y %I:%M %p"),  # Return raw UTC, let frontend handle offset
+            "DateTime": row[0].strftime("%d-%b-%Y %I:%M %p"),  # Return in IST-compatible format
             "TextNotes": row[1],
             "AudioNotes": base64.b64encode(row[2]).decode("utf-8") if row[2] else None
         } for row in notes]
