@@ -341,7 +341,7 @@ def register_client():
             logger.warning("Missing required fields in register-client request")
             return jsonify({"error": "All fields are required"}), 400
 
-        if len(foreignid) < 1 || len(foreignid) > 16:
+        if len(foreignid) < 1 or len(foreignid) > 16:
             logger.warning("Invalid foreignid length")
             return jsonify({"error": "Foreign ID must be between 1 and 16 characters"}), 400
 
