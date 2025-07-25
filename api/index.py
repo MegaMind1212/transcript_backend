@@ -54,8 +54,8 @@ def init_db():
         cursor = conn.cursor()
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS otps (
-                key STRING PRIMARY KEY,
-                otp STRING,
+                key TEXT PRIMARY KEY,
+                otp TEXT,
                 created_at TIMESTAMP DEFAULT now()
             )
         """)
