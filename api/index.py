@@ -9,7 +9,6 @@ from email.mime.text import MIMEText
 import random
 import traceback
 import logging
-import re
 
 # Set up logging
 logging.basicConfig(level=logging.DEBUG)
@@ -21,9 +20,6 @@ app = Flask(__name__)
 
 # CORS configuration with permissive settings for testing
 CORS(app, resources={r"/api/*": {"origins": ["*"], "methods": ["GET", "POST", "OPTIONS", "PUT", "DELETE"], "allow_headers": ["*"], "supports_credentials": True}})
-
-# IST offset (UTC+5:30)
-IST_OFFSET = timedelta(hours=5, minutes=30)
 
 # CockroachDB configuration using only environment variables
 def get_db_connection():
@@ -54,8 +50,8 @@ def init_db():
         cursor = conn.cursor()
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS otps (
-                key TEXT PRIMARY KEY,
-                otp TEXT,
+                key STRING PRIMARY KEY,
+                otp STRING,
                 created_at TIMESTAMP DEFAULT now()
             )
         """)
@@ -134,11 +130,10 @@ def request_otp():
 
         otp = str(random.randint(1000, 9999))
         otp_key = f"{orgid}-{empid}"
-        current_time = datetime.utcnow()
 
         cursor.execute(
             "INSERT INTO otps (key, otp, created_at) VALUES (%s, %s, %s) ON CONFLICT (key) DO UPDATE SET otp = %s, created_at = %s",
-            (otp_key, otp, current_time, otp, current_time)
+            (otp_key, otp, datetime.now(), otp, datetime.now())
         )
         conn.commit()
         logger.info(f"Generated OTP {otp} for {empemail}")
@@ -222,8 +217,7 @@ def validate_otp():
             return jsonify({"error": "OTP not found or expired"}), 400
 
         stored_otp, created_at = result
-        current_time = datetime.utcnow()
-        if current_time - created_at > timedelta(minutes=5):
+        if datetime.now() - created_at > timedelta(minutes=5):
             cursor.execute("DELETE FROM otps WHERE key = %s", (otp_key,))
             conn.commit()
             logger.warning(f"OTP expired for key {otp_key}")
@@ -333,21 +327,13 @@ def register_client():
         data = request.get_json()
         orgid = int(data.get("orgId"))
         clientname = data.get("clientName")
-        foreignid = data.get("foreignId")
-        clientphone = data.get("clientPhone") or "NA"
+        clientshortname = data.get("clientShortname")
+        clientphone = data.get("clientPhone")
         clientemail = data.get("clientEmail")
 
-        if not all([orgid, clientname, foreignid, clientemail]):
+        if not all([orgid, clientname, clientshortname, clientphone, clientemail]):
             logger.warning("Missing required fields in register-client request")
             return jsonify({"error": "All fields are required"}), 400
-
-        if len(foreignid) < 1 or len(foreignid) > 16:
-            logger.warning("Invalid foreignid length")
-            return jsonify({"error": "Foreign ID must be between 1 and 16 characters"}), 400
-
-        if clientphone != "NA" and not re.match(r'\+91[0-9]{10}', clientphone):
-            logger.warning("Invalid client phone format")
-            return jsonify({"error": "If provided, client phone must be in the format +91 followed by 10 digits"}), 400
 
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -369,9 +355,9 @@ def register_client():
 
         cursor.execute(
             """INSERT INTO clients 
-            (clientid, orgid, clientname, foreignid, clientphone, clientemail) 
+            (clientid, orgid, clientname, clientshortname, clientphone, clientemail) 
             VALUES (%s, %s, %s, %s, %s, %s)""",
-            (new_clientid, orgid, clientname, foreignid, clientphone, clientemail)
+            (new_clientid, orgid, clientname, clientshortname, clientphone, clientemail)
         )
 
         conn.commit()
@@ -412,7 +398,7 @@ def fetch_clients():
         cursor = conn.cursor()
 
         cursor.execute(
-            "SELECT clientid, clientname, foreignid FROM clients WHERE orgid = %s",
+            "SELECT clientid, clientname, clientshortname FROM clients WHERE orgid = %s",
             (orgid,)
         )
         clients = cursor.fetchall()
@@ -420,7 +406,7 @@ def fetch_clients():
         client_list = [{
             "ClientID": row[0],
             "ClientName": row[1],
-            "ForeignID": row[2]
+            "ClientShortname": row[2]
         } for row in clients]
 
         response = jsonify({"clients": client_list})
@@ -473,12 +459,11 @@ def save_transcription():
             import base64
             audio_binary = base64.b64decode(audionotes)
 
-        current_time = datetime.utcnow()
         cursor.execute(
             """INSERT INTO notes 
             (orgid, empid, clientid, meetingid, datetime, audionotes, textnotes) 
             VALUES (%s, %s, %s, nextval('notes_seq'), %s, %s, %s)""",
-            (orgid, empid, clientid, current_time, psycopg2.Binary(audio_binary) if audio_binary else None, transcriptiontext)
+            (orgid, empid, clientid, datetime.now(), psycopg2.Binary(audio_binary) if audio_binary else None, transcriptiontext)
         )
 
         conn.commit()
@@ -535,7 +520,7 @@ def fetch_notes():
 
         import base64
         note_list = [{
-            "DateTime": row[0].strftime("%d-%b-%Y %I:%M %p"),  # Return in IST-compatible format
+            "DateTime": row[0].isoformat(),
             "TextNotes": row[1],
             "AudioNotes": base64.b64encode(row[2]).decode("utf-8") if row[2] else None
         } for row in notes]
@@ -564,41 +549,34 @@ def update_note():
     cursor = None
     try:
         data = request.get_json()
-        logger.debug(f"Received update data: {data}")
         orgid = int(data.get("orgId"))
         empid = int(data.get("empId"))
         clientid = int(data.get("clientId"))
-        dateTime = data.get("dateTime")  # Expecting "dd-mmm-yyyy hh:mm AM/PM"
+        dateTime = data.get("dateTime")  # Expecting ISO format
         newText = data.get("newText")
 
         if not all([orgid, empid, clientid, dateTime, newText]):
             logger.warning("Missing required fields in update-note request")
             return jsonify({"error": "orgid, empid, clientid, dateTime, and newText are required"}), 400
 
-        # Parse incoming dateTime to UTC
-        try:
-            dt = datetime.strptime(dateTime, "%d-%b-%Y %I:%M %p")
-            # Convert to UTC (assuming input is IST, subtract IST_OFFSET)
-            dt_utc = dt - IST_OFFSET
-            logger.debug(f"Parsed datetime (UTC): {dt_utc}")
-        except ValueError as e:
-            logger.error(f"Invalid datetime format: {dateTime}, error: {str(e)}")
-            return jsonify({"error": "Invalid dateTime format. Use dd-mmm-yyyy hh:mm AM/PM"}), 400
-
         conn = get_db_connection()
         cursor = conn.cursor()
+
+        # Convert ISO string to datetime object for comparison
+        from datetime import datetime
+        dt = datetime.fromisoformat(dateTime.replace("Z", "+00:00"))
 
         cursor.execute(
             """UPDATE notes 
             SET textnotes = %s 
             WHERE orgid = %s AND empid = %s AND clientid = %s AND datetime = %s""",
-            (newText, orgid, empid, clientid, dt_utc)
+            (newText, orgid, empid, clientid, dt)
         )
         if cursor.rowcount == 0:
-            logger.warning(f"No note found to update with datetime={dt_utc}")
+            logger.warning(f"No note found to update with datetime={dt}")
             return jsonify({"error": "No matching note found to update"}), 404
         conn.commit()
-        logger.info(f"Successfully updated note with datetime={dt_utc}")
+        logger.info(f"Successfully updated note with datetime={dt}")
 
         response = jsonify({"message": "Transcription updated successfully"})
         response.headers.add("Access-Control-Allow-Origin", "*")
