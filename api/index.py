@@ -4,6 +4,7 @@ import psycopg2
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from datetime import datetime, timedelta
+import pytz
 import smtplib
 from email.mime.text import MIMEText
 import random
@@ -52,7 +53,7 @@ def init_db():
             CREATE TABLE IF NOT EXISTS otps (
                 key STRING PRIMARY KEY,
                 otp STRING,
-                created_at TIMESTAMP DEFAULT now()
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
             )
         """)
         conn.commit()
@@ -131,9 +132,12 @@ def request_otp():
         otp = str(random.randint(1000, 9999))
         otp_key = f"{orgid}-{empid}"
 
+        ist = pytz.timezone('Asia/Kolkata')
+        created_at = datetime.now(ist)
+
         cursor.execute(
             "INSERT INTO otps (key, otp, created_at) VALUES (%s, %s, %s) ON CONFLICT (key) DO UPDATE SET otp = %s, created_at = %s",
-            (otp_key, otp, datetime.now(), otp, datetime.now())
+            (otp_key, otp, created_at, otp, created_at)
         )
         conn.commit()
         logger.info(f"Generated OTP {otp} for {empemail}")
@@ -217,7 +221,8 @@ def validate_otp():
             return jsonify({"error": "OTP not found or expired"}), 400
 
         stored_otp, created_at = result
-        if datetime.now() - created_at > timedelta(minutes=5):
+        ist = pytz.timezone('Asia/Kolkata')
+        if datetime.now(ist) - created_at > timedelta(minutes=5):
             cursor.execute("DELETE FROM otps WHERE key = %s", (otp_key,))
             conn.commit()
             logger.warning(f"OTP expired for key {otp_key}")
@@ -459,11 +464,14 @@ def save_transcription():
             import base64
             audio_binary = base64.b64decode(audionotes)
 
+        ist = pytz.timezone('Asia/Kolkata')
+        created_at = datetime.now(ist)
+
         cursor.execute(
             """INSERT INTO notes 
             (orgid, empid, clientid, meetingid, datetime, audionotes, textnotes) 
             VALUES (%s, %s, %s, nextval('notes_seq'), %s, %s, %s)""",
-            (orgid, empid, clientid, datetime.now(), psycopg2.Binary(audio_binary) if audio_binary else None, transcriptiontext)
+            (orgid, empid, clientid, created_at, psycopg2.Binary(audio_binary) if audio_binary else None, transcriptiontext)
         )
 
         conn.commit()
@@ -511,7 +519,7 @@ def fetch_notes():
         params = [orgid, empid, clientid]
 
         if selecteddate:
-            query += " AND DATE(datetime) = %s"
+            query += " AND DATE(datetime AT TIME ZONE 'Asia/Kolkata') = %s"
             params.append(selecteddate)
 
         query += " ORDER BY datetime DESC"
@@ -520,7 +528,7 @@ def fetch_notes():
 
         import base64
         note_list = [{
-            "DateTime": row[0].isoformat(),
+            "DateTime": row[0].astimezone(pytz.timezone('Asia/Kolkata')).strftime('%Y-%m-%d %H:%M:%S IST'),
             "TextNotes": row[1],
             "AudioNotes": base64.b64encode(row[2]).decode("utf-8") if row[2] else None
         } for row in notes]
@@ -552,7 +560,7 @@ def update_note():
         orgid = int(data.get("orgId"))
         empid = int(data.get("empId"))
         clientid = int(data.get("clientId"))
-        dateTime = data.get("dateTime")  # Expecting ISO format
+        dateTime = data.get("dateTime")  # Expecting "YYYY-MM-DD HH:MM:SS IST"
         newText = data.get("newText")
 
         if not all([orgid, empid, clientid, dateTime, newText]):
@@ -562,9 +570,9 @@ def update_note():
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        # Convert ISO string to datetime object for comparison
-        from datetime import datetime
-        dt = datetime.fromisoformat(dateTime.replace("Z", "+00:00"))
+        # Parse the IST string to datetime
+        ist = pytz.timezone('Asia/Kolkata')
+        dt = datetime.strptime(dateTime, '%Y-%m-%d %H:%M:%S IST').replace(tzinfo=ist)
 
         cursor.execute(
             """UPDATE notes 
