@@ -4,7 +4,6 @@ import psycopg2
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from datetime import datetime, timedelta
-import pytz
 import smtplib
 from email.mime.text import MIMEText
 import random
@@ -132,8 +131,9 @@ def request_otp():
         otp = str(random.randint(1000, 9999))
         otp_key = f"{orgid}-{empid}"
 
-        ist = pytz.timezone('Asia/Kolkata')
-        created_at = datetime.now(ist)
+        # Use IST offset (+5:30) manually
+        ist_offset = timedelta(hours=5, minutes=30)
+        created_at = datetime.utcnow() + ist_offset
 
         cursor.execute(
             "INSERT INTO otps (key, otp, created_at) VALUES (%s, %s, %s) ON CONFLICT (key) DO UPDATE SET otp = %s, created_at = %s",
@@ -221,8 +221,9 @@ def validate_otp():
             return jsonify({"error": "OTP not found or expired"}), 400
 
         stored_otp, created_at = result
-        ist = pytz.timezone('Asia/Kolkata')
-        if datetime.now(ist) - created_at > timedelta(minutes=5):
+        ist_offset = timedelta(hours=5, minutes=30)
+        current_time = datetime.utcnow() + ist_offset
+        if current_time - created_at > timedelta(minutes=5):
             cursor.execute("DELETE FROM otps WHERE key = %s", (otp_key,))
             conn.commit()
             logger.warning(f"OTP expired for key {otp_key}")
@@ -464,8 +465,9 @@ def save_transcription():
             import base64
             audio_binary = base64.b64decode(audionotes)
 
-        ist = pytz.timezone('Asia/Kolkata')
-        created_at = datetime.now(ist)
+        # Use IST offset (+5:30) manually
+        ist_offset = timedelta(hours=5, minutes=30)
+        created_at = datetime.utcnow() + ist_offset
 
         cursor.execute(
             """INSERT INTO notes 
@@ -519,7 +521,7 @@ def fetch_notes():
         params = [orgid, empid, clientid]
 
         if selecteddate:
-            query += " AND DATE(datetime AT TIME ZONE 'Asia/Kolkata') = %s"
+            query += " AND DATE(datetime AT TIME ZONE 'UTC' + INTERVAL '5 hours 30 minutes') = %s"
             params.append(selecteddate)
 
         query += " ORDER BY datetime DESC"
@@ -528,7 +530,7 @@ def fetch_notes():
 
         import base64
         note_list = [{
-            "DateTime": row[0].astimezone(pytz.timezone('Asia/Kolkata')).strftime('%Y-%m-%d %H:%M:%S IST'),
+            "DateTime": row[0].astimezone(tz=None).strftime('%Y-%m-%d %H:%M:%S IST'),  # Adjust to IST and format
             "TextNotes": row[1],
             "AudioNotes": base64.b64encode(row[2]).decode("utf-8") if row[2] else None
         } for row in notes]
@@ -570,9 +572,11 @@ def update_note():
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        # Parse the IST string to datetime
-        ist = pytz.timezone('Asia/Kolkata')
-        dt = datetime.strptime(dateTime, '%Y-%m-%d %H:%M:%S IST').replace(tzinfo=ist)
+        # Parse the IST string to datetime (remove 'IST' and assume +5:30 offset)
+        dt_str = dateTime.replace(" IST", "")
+        dt = datetime.strptime(dt_str, '%Y-%m-%d %H:%M:%S')
+        ist_offset = timedelta(hours=5, minutes=30)
+        dt = dt + ist_offset
 
         cursor.execute(
             """UPDATE notes 
