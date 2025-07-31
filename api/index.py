@@ -330,13 +330,13 @@ def register_client():
         data = request.get_json()
         orgid = int(data.get("orgId"))
         clientname = data.get("clientName")
-        clientshortname = data.get("clientShortname")
-        clientphone = data.get("clientPhone")
+        clientshortname = data.get("clientShortname")  # Optional, can be null
+        clientphone = data.get("clientPhone", "NA")   # Optional, default to "NA" if not provided
         clientemail = data.get("clientEmail")
 
-        if not all([orgid, clientname, clientshortname, clientphone, clientemail]):
+        if not all([orgid, clientname, clientemail]):  # Only orgid, clientname, clientemail are required
             logger.warning("Missing required fields in register-client request")
-            return jsonify({"error": "All fields are required"}), 400
+            return jsonify({"error": "orgid, clientname, and clientemail are required"}), 400
 
         conn = get_db_connection()
         cursor = conn.cursor()
