@@ -3,7 +3,7 @@ from dotenv import load_dotenv
 import psycopg2
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from datetime import datetime
+from datetime import datetime, timedelta
 import smtplib
 from email.mime.text import MIMEText
 import random
@@ -330,11 +330,11 @@ def register_client():
         data = request.get_json()
         orgid = int(data.get("orgId"))
         clientname = data.get("clientName")
-        clientshortname = data.get("clientShortname")  # Optional, can be null
-        clientphone = data.get("clientPhone", "NA")   # Optional, default to "NA" if not provided
+        clientshortname = data.get("clientShortname")
+        clientphone = data.get("clientPhone", "NA")
         clientemail = data.get("clientEmail")
 
-        if not all([orgid, clientname, clientemail]):  # Only orgid, clientname, clientemail are required
+        if not all([orgid, clientname, clientemail]):
             logger.warning("Missing required fields in register-client request")
             return jsonify({"error": "orgid, clientname, and clientemail are required"}), 400
 
@@ -557,7 +557,7 @@ def update_note():
         orgid = int(data.get("orgId"))
         empid = int(data.get("empId"))
         clientid = int(data.get("clientId"))
-        dateTime = data.get("dateTime")  # Expecting "YYYY-MM-DDTHH:MM:SS.ffffff"
+        dateTime = data.get("dateTime")
         newText = data.get("newText")
 
         if not all([orgid, empid, clientid, dateTime, newText]):
@@ -567,7 +567,6 @@ def update_note():
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        # Parse the datetime string in the original format
         dt = datetime.strptime(dateTime, '%Y-%m-%dT%H:%M:%S.%f')
 
         cursor.execute(
